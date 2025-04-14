@@ -4,12 +4,15 @@ import pandas as pd
 import tempfile
 import zipfile
 import os
+from shapely.geometry import Point
 
 # Branding and layout setup
 st.set_page_config(page_title="KCS Spot Spray Converter", layout="centered")
 st.image("https://yourdomain.com/logo.png", width=200)  # Replace with actual logo URL
 st.title("Kingdom Crop Spraying - Spot Spray Converter")
 st.markdown("Convert Solvi shapefiles into DJI Agras-ready CSV files for targeted spot spraying with ease.")
+
+st.info("📁 Please upload a .ZIP file that includes the following required components: .shp, .shx, .dbf. Including .prj is also recommended for accurate geolocation. All files must be zipped before uploading.")
 
 # Step 1: Upload ZIP file containing SHP components
 uploaded_file = st.file_uploader("Upload your Solvi SHP file (.zip with .shp, .shx, .dbf, .prj included)", type="zip")
@@ -29,11 +32,17 @@ if uploaded_file is not None:
         shp_files = [f for f in os.listdir(tmpdir) if f.endswith('.shp')]
 
         if not shp_files:
-            st.error("No .shp file found in the uploaded archive.")
+            st.error("No .shp file found in the uploaded archive. Make sure to include all required files: .shp, .shx, .dbf")
         else:
             shp_path = os.path.join(tmpdir, shp_files[0])
             try:
                 gdf = gpd.read_file(shp_path)
+
+                # Convert non-Point geometries to centroids
+                if not all(gdf.geometry.geom_type == 'Point'):
+                    st.warning("⚠️ Geometry is not point-based. Converting features to centroid points for processing.")
+                    gdf["geometry"] = gdf.geometry.centroid
+
                 gdf['Longitude'] = gdf.geometry.x
                 gdf['Latitude'] = gdf.geometry.y
                 gdf['Radius (m)'] = radius
