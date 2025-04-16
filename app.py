@@ -3,99 +3,114 @@ import zipfile
 import tempfile
 import os
 import shapefile  # pyshp
-import shutil
+import pandas as pd
 
 st.set_page_config(page_title="Solvi to DJI Converter", layout="centered")
-
 st.title("Solvi to DJI Converter")
-st.caption("Upload your Solvi `.zip` and download DJI-ready shapefiles with embedded spray rates.")
+st.caption("Upload your Solvi `.zip` or `.json` file and download DJI-compatible shapefiles.")
 
-uploaded_file = st.file_uploader("Drop your Solvi ZIP file here", type=["zip"])
-spray_rate = st.number_input("Spray Rate (GPA)", min_value=0.1, value=2.0, step=0.1)
+uploaded_file = st.file_uploader("Drag and drop file here", type=["zip", "json"], help="Limit 200MB per file • ZIP, JSON")
 
-def convert_zip(uploaded_file, spray_rate):
+# Spray rate input
+spray_rate = st.number_input("Enter Spray Rate (Gallons per Acre)", min_value=0.1, step=0.1, value=1.0)
+
+def process_zip(uploaded_file, spray_rate):
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
+            # Save uploaded zip to disk
             zip_path = os.path.join(temp_dir, "upload.zip")
             with open(zip_path, "wb") as f:
-                f.write(uploaded_file.read())
+                f.write(uploaded_file.getvalue())
 
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            # Extract files
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Find base name
-            base_name = next(f.split(".")[0] for f in os.listdir(temp_dir) if f.endswith(".shp"))
+            # Find .shp file
+            shp_path = None
+            for file in os.listdir(temp_dir):
+                if file.endswith(".shp"):
+                    shp_path = os.path.join(temp_dir, file)
+                    base_name = os.path.splitext(file)[0]
+                    break
 
-            # Validate required files
+            if not shp_path:
+                return None, None, "No .shp file found in archive."
+
+            # Required files check
             required_exts = [".shp", ".shx", ".dbf", ".prj"]
             for ext in required_exts:
-                if not os.path.exists(os.path.join(temp_dir, f"{base_name}{ext}")):
-                    return None, None, f"Missing {ext} file"
+                if not os.path.exists(os.path.join(temp_dir, base_name + ext)):
+                    return None, None, f"Missing required file: {base_name + ext}"
 
-            # Create original ZIP (untouched)
-            original_zip_path = os.path.join(temp_dir, "DJI_original.zip")
-            with zipfile.ZipFile(original_zip_path, "w") as z:
+            # Read shapefile
+            sf = shapefile.Reader(shp_path)
+            shapes = sf.shapes()
+            fields = [f[0] for f in sf.fields[1:]]  # skip DeletionFlag
+            records = sf.records()
+
+            # Estimate area per shape (rough) and calculate volume
+            acres_list = []
+            volumes = []
+            for shape in shapes:
+                points = shape.points
+                area = 0
+                for i in range(len(points)):
+                    x1, y1 = points[i - 1]
+                    x2, y2 = points[i]
+                    area += (x1 * y2 - x2 * y1)
+                area = abs(area) / 2.0  # m²
+                acres = area * 0.000247105  # m² to acres
+                volume = round(acres * spray_rate, 2)
+                acres_list.append(round(acres, 3))
+                volumes.append(volume)
+
+            # Build CSV
+            df = pd.DataFrame(records, columns=fields)
+            df["Acres"] = acres_list
+            df["Volume (Gal)"] = volumes
+            csv_path = os.path.join(temp_dir, "spray_volumes.csv")
+            df.to_csv(csv_path, index=False)
+
+            # Repackage shapefile for DJI
+            output_zip_path = os.path.join(temp_dir, "DJI_ready.zip")
+            with zipfile.ZipFile(output_zip_path, 'w') as zip_out:
                 for ext in required_exts:
-                    path = os.path.join(temp_dir, f"{base_name}{ext}")
-                    z.write(path, arcname=f"{base_name}{ext}")
+                    path = os.path.join(temp_dir, base_name + ext)
+                    zip_out.write(path, arcname=os.path.basename(path))
 
-            # Inject GPA into DBF
-            reader = shapefile.Reader(os.path.join(temp_dir, f"{base_name}.shp"))
-            fields = reader.fields[1:]
-            field_names = [f[0] for f in fields]
+            with open(output_zip_path, "rb") as f:
+                zip_bytes = f.read()
+            with open(csv_path, "rb") as f:
+                csv_bytes = f.read()
 
-            writer = shapefile.Writer(os.path.join(temp_dir, "updated"))
-            for field in fields:
-                writer.field(*field)
-            if "GPA" not in field_names:
-                writer.field("GPA", "N", 10, 2)
-
-            for rec, shape in zip(reader.records(), reader.shapes()):
-                rec_values = list(rec)
-                if "GPA" not in field_names:
-                    rec_values.append(round(spray_rate, 2))
-                writer.record(*rec_values)
-                writer.shape(shape)
-
-            writer.close()
-
-            # Copy PRJ over to match updated
-            shutil.copyfile(os.path.join(temp_dir, f"{base_name}.prj"), os.path.join(temp_dir, "updated.prj"))
-
-            # Create updated ZIP (with GPA)
-            updated_zip_path = os.path.join(temp_dir, "DJI_updated.zip")
-            with zipfile.ZipFile(updated_zip_path, "w") as z:
-                for ext in [".shp", ".shx", ".dbf", ".prj"]:
-                    path = os.path.join(temp_dir, f"updated{ext}")
-                    if os.path.exists(path):
-                        z.write(path, arcname=f"updated{ext}")
-
-            with open(original_zip_path, "rb") as f1, open(updated_zip_path, "rb") as f2:
-                return f1.read(), f2.read(), None
-
+            return zip_bytes, csv_bytes, None
     except Exception as e:
-        return None, None, f"Unexpected error: {e}"
+        return None, None, str(e)
 
-# --- Frontend UI ---
+# --- HANDLE FILE UPLOAD ---
 if uploaded_file:
-    with st.spinner("Processing..."):
-        original_zip, updated_zip, error = convert_zip(uploaded_file, spray_rate)
+    if uploaded_file.name.endswith(".zip"):
+        zip_data, csv_data, error = process_zip(uploaded_file, spray_rate)
 
-    if error:
-        st.error(error)
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
+        if error:
+            st.error(f"Unexpected error: {error}")
+        else:
+            st.success("ZIP file uploaded. Processing complete!")
+
             st.download_button(
-                "⬇️ Download Original DJI ZIP",
-                data=original_zip,
-                file_name="DJI_original.zip",
+                label="📦 Download DJI Shapefile ZIP",
+                data=zip_data,
+                file_name="DJI_ready.zip",
                 mime="application/zip"
             )
-        with col2:
+
             st.download_button(
-                "⬇️ Download Updated ZIP (with GPA)",
-                data=updated_zip,
-                file_name="DJI_updated.zip",
-                mime="application/zip"
+                label="📄 Download Spray Volume CSV",
+                data=csv_data,
+                file_name="spray_volumes.csv",
+                mime="text/csv"
             )
+
+    elif uploaded_file.name.endswith(".json"):
+        st.warning("JSON file support coming soon. Please upload a `.zip` from Solvi.")
