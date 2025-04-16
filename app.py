@@ -54,18 +54,17 @@ def process_zip(zip_bytes):
 # --- HANDLE UPLOAD ---
 if uploaded_file:
     if uploaded_file.name.endswith(".zip"):
+    output_file, error = process_zip(uploaded_file)
+
+    if error:
+        st.error(error)
+    else:
         st.success("ZIP file uploaded. Processing...")
-
-        output_file, error = process_zip(uploaded_file)
-
-        if error:
-            st.error(error)
-        else:
-            st.download_button(
-                label="Download DJI Shapefile ZIP",
-                data=output_file,
-                file_name="DJI_ready.zip",
-                mime="application/zip"
-            )
+        st.download_button(
+            label="Download DJI Shapefile ZIP",
+            data=output_file,
+            file_name="DJI_ready.zip",
+            mime="application/zip"
+        )
     elif uploaded_file.name.endswith(".json"):
         st.warning("JSON file support coming soon. Please upload a .zip from Solvi.")
