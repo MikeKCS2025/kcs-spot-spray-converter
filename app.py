@@ -15,59 +15,54 @@ uploaded_file = st.file_uploader(
     help="Limit 200MB per file • ZIP, JSON"
 )
 
-def extract_shapefiles_from_zip(uploaded_file):
+def extract_and_package_shapefiles(uploaded_file):
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             zip_path = os.path.join(temp_dir, "input.zip")
-
-            # Save uploaded content to zip file
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.read())
 
-            # Extract ZIP contents
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Look for base .shp file(s)
-            base_names = set()
-            for file in os.listdir(temp_dir):
-                if file.endswith(".shp"):
-                    base = os.path.splitext(file)[0]
-                    base_names.add(base)
+            # Identify .shp base filenames
+            shapefiles = [f for f in os.listdir(temp_dir) if f.endswith(".shp")]
+            if not shapefiles:
+                return None, "No .shp files found inside the ZIP."
 
-            if not base_names:
-                return None
-
-            base_name = list(base_names)[0]
+            base_name = os.path.splitext(shapefiles[0])[0]
             required_exts = [".shp", ".shx", ".dbf", ".prj"]
             missing = [ext for ext in required_exts if not os.path.exists(os.path.join(temp_dir, base_name + ext))]
 
             if missing:
-                return None
+                return None, f"Missing required files: {', '.join(missing)}"
 
-            # Create output zip with required files
+            # Package output
             output_dir = os.path.join(temp_dir, "output")
             os.makedirs(output_dir, exist_ok=True)
             for ext in required_exts:
-                shutil.copy(os.path.join(temp_dir, base_name + ext), os.path.join(output_dir, base_name + ext))
+                src = os.path.join(temp_dir, base_name + ext)
+                dst = os.path.join(output_dir, base_name + ext)
+                shutil.copy(src, dst)
 
-            output_zip_path = os.path.join(temp_dir, f"DJI-ready_{uuid.uuid4().hex}.zip")
-            with zipfile.ZipFile(output_zip_path, 'w') as zip_out:
+            output_zip_path = os.path.join(temp_dir, f"dji-ready-{uuid.uuid4().hex[:8]}.zip")
+            with zipfile.ZipFile(output_zip_path, 'w') as zipf:
                 for ext in required_exts:
                     file_path = os.path.join(output_dir, base_name + ext)
-                    zip_out.write(file_path, arcname=os.path.basename(file_path))
+                    zipf.write(file_path, arcname=os.path.basename(file_path))
 
-            with open(output_zip_path, "rb") as result:
-                return result.read()
+            with open(output_zip_path, "rb") as f:
+                return f.read(), None
 
     except Exception as e:
-        st.error(f"Something went wrong: {e}")
-        return None
+        return None, str(e)
 
 if uploaded_file:
     if uploaded_file.name.endswith(".zip"):
-        result = extract_shapefiles_from_zip(uploaded_file)
-        if result:
+        result, error = extract_and_package_shapefiles(uploaded_file)
+        if error:
+            st.error(f"❌ {error}")
+        else:
             st.success("✅ Successfully converted your Solvi file!")
             st.download_button(
                 label="Download DJI-ready ZIP",
@@ -75,7 +70,5 @@ if uploaded_file:
                 file_name="dji_ready.zip",
                 mime="application/zip"
             )
-        else:
-            st.error("❌ Could not process that file. Make sure it's a Solvi .zip containing .shp, .shx, .dbf, and .prj.")
     else:
         st.warning("Only Solvi .zip exports are supported right now.")
