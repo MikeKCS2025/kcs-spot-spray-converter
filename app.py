@@ -24,7 +24,7 @@ def process_zip(uploaded_file):
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
 
-            # Extract zip
+            # Extract it
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
@@ -53,7 +53,6 @@ def process_zip(uploaded_file):
 
             with open(output_zip_path, "rb") as f:
                 return f.read(), None
-
     except Exception as e:
         return None, f"Unexpected error: {e}"
 
@@ -65,13 +64,12 @@ if uploaded_file:
         if error:
             st.error(error)
         else:
-            st.success("ZIP file uploaded. Processing complete.")
+            st.success("ZIP file uploaded. Processing complete!")
             st.download_button(
                 label="Download DJI Shapefile ZIP",
                 data=output_file,
                 file_name="DJI_ready.zip",
                 mime="application/zip"
             )
-
     elif uploaded_file.name.endswith(".json"):
         st.warning("JSON file support coming soon. Please upload a .zip from Solvi.")
