@@ -25,7 +25,6 @@ def extract_and_package_shapefiles(uploaded_file):
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Identify .shp base filenames
             shapefiles = [f for f in os.listdir(temp_dir) if f.endswith(".shp")]
             if not shapefiles:
                 return None, "No .shp files found inside the ZIP."
@@ -37,7 +36,6 @@ def extract_and_package_shapefiles(uploaded_file):
             if missing:
                 return None, f"Missing required files: {', '.join(missing)}"
 
-            # Package output
             output_dir = os.path.join(temp_dir, "output")
             os.makedirs(output_dir, exist_ok=True)
             for ext in required_exts:
@@ -55,7 +53,7 @@ def extract_and_package_shapefiles(uploaded_file):
                 return f.read(), None
 
     except Exception as e:
-        return None, str(e)
+        return None, f"Unexpected error: {str(e)}"
 
 if uploaded_file:
     if uploaded_file.name.endswith(".zip"):
