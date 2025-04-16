@@ -1,63 +1,74 @@
 import streamlit as st
 import zipfile
-import json
+import tempfile
 import os
+import shutil
+import uuid
 
-def convert_solvi_to_dji(file):
-    if file.name.endswith('.zip'):
-        with zipfile.ZipFile(file, 'r') as zip_ref:
-            zip_ref.extractall("temp_zip")
-            for name in zip_ref.namelist():
-                if name.endswith(".json"):
-                    json_path = os.path.join("temp_zip", name)
-                    break
-    elif file.name.endswith('.json'):
-        json_path = file.name
-        with open(json_path, "wb") as f:
-            f.write(file.getbuffer())
-    else:
-        return None, "Unsupported file type"
-
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
-    # Example: Extract GPS points and write to KML (placeholder logic)
-    kml_content = '''<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-<Document>
-  <name>Converted DJI File</name>
-'''
-
-    for idx, target in enumerate(data.get("targets", [])):
-        lat = target.get("lat", 0)
-        lon = target.get("lon", 0)
-        kml_content += f'''
-  <Placemark>
-    <name>Target {idx+1}</name>
-    <Point>
-      <coordinates>{lon},{lat},0</coordinates>
-    </Point>
-  </Placemark>'''
-
-    kml_content += '''
-</Document>
-</kml>'''
-
-    output_filename = "converted.kml"
-    with open(output_filename, "w") as f:
-        f.write(kml_content)
-
-    return output_filename, None
+st.set_page_config(page_title="Solvi to DJI Converter", layout="centered")
 
 st.title("Solvi to DJI Converter")
+st.caption("Upload your Solvi `.zip` or `.json` file and download DJI-compatible shapefiles.")
 
-uploaded_file = st.file_uploader("Upload your Solvi .zip or .json file", type=["zip", "json"])
+uploaded_file = st.file_uploader(
+    "Drag and drop file here", 
+    type=["zip", "json"],
+    help="Limit 200MB per file • ZIP, JSON"
+)
+
+def extract_shapefiles_from_zip(zip_bytes):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        zip_path = os.path.join(temp_dir, "input.zip")
+        with open(zip_path, "wb") as f:
+            f.write(zip_bytes.getvalue())
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+
+        # Look for .shp and required associated files
+        base_names = set()
+        for file in os.listdir(temp_dir):
+            if file.endswith(".shp"):
+                base = os.path.splitext(file)[0]
+                base_names.add(base)
+
+        if not base_names:
+            return None, "No .shp file found inside the ZIP."
+
+        base_name = list(base_names)[0]
+        required_exts = [".shp", ".shx", ".dbf", ".prj"]
+        missing = [ext for ext in required_exts if not os.path.exists(os.path.join(temp_dir, base_name + ext))]
+
+        if missing:
+            return None, f"Missing associated shapefile components: {', '.join(missing)}"
+
+        # Create output zip
+        output_dir = os.path.join(temp_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+
+        for ext in required_exts:
+            shutil.copy(os.path.join(temp_dir, base_name + ext), os.path.join(output_dir, base_name + ext))
+
+        output_zip_path = os.path.join(temp_dir, f"{base_name}_DJI_Ready.zip")
+        with zipfile.ZipFile(output_zip_path, "w") as zipf:
+            for file in os.listdir(output_dir):
+                zipf.write(os.path.join(output_dir, file), file)
+
+        return output_zip_path, None
 
 if uploaded_file:
-    output_file, error = convert_solvi_to_dji(uploaded_file)
-    if error:
-        st.error(error)
+    if uploaded_file.name.endswith(".zip"):
+        output_zip, error = extract_shapefiles_from_zip(uploaded_file)
+        if error:
+            st.error(error)
+        elif output_zip:
+            with open(output_zip, "rb") as f:
+                st.success("✅ Conversion successful! Your DJI-ready shapefile is ready.")
+                st.download_button(
+                    label="⬇️ Download DJI Shapefile Zip",
+                    data=f.read(),
+                    file_name=os.path.basename(output_zip),
+                    mime="application/zip"
+                )
     else:
-        with open(output_file, "rb") as f:
-            st.download_button("Download DJI KML File", f, file_name="converted.kml")
-
+        st.warning("Currently, only .zip files containing shapefiles are supported.")
