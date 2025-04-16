@@ -24,11 +24,11 @@ def process_zip(uploaded_file):
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
 
-            # Extract contents
+            # Extract zip
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Find shapefiles
+            # Look for shapefiles
             base_names = set()
             for file in os.listdir(temp_dir):
                 if file.endswith(".shp"):
@@ -44,7 +44,7 @@ def process_zip(uploaded_file):
             if missing:
                 return None, f"Missing required files: {', '.join(missing)}"
 
-            # Package into DJI_ready.zip
+            # Create output zip
             output_zip_path = os.path.join(temp_dir, "DJI_ready.zip")
             with zipfile.ZipFile(output_zip_path, 'w') as zip_out:
                 for ext in required_exts:
@@ -65,7 +65,7 @@ if uploaded_file:
         if error:
             st.error(error)
         else:
-            st.success("ZIP file uploaded. DJI Shapefile is ready!")
+            st.success("ZIP file uploaded. Processing complete.")
             st.download_button(
                 label="Download DJI Shapefile ZIP",
                 data=output_file,
