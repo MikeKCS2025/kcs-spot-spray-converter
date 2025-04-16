@@ -54,7 +54,7 @@ def process_zip(uploaded_file):
             with open(output_zip_path, "rb") as f:
                 return f.read(), None
     except Exception as e:
-        return None, str(e)
+        return None, f"Unexpected error: {e}"
 
 # --- HANDLE UPLOAD ---
 if uploaded_file:
