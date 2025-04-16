@@ -17,12 +17,16 @@ uploaded_file = st.file_uploader(
 )
 
 def process_zip(uploaded_file):
+    def process_zip(uploaded_file):
     try:
+        st.warning("Starting tempfile block...")  # ← add this line right here
+
         with tempfile.TemporaryDirectory() as temp_dir:
             # Save uploaded zip file to temp_dir
             zip_path = os.path.join(temp_dir, "input.zip")
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
+
 
             # Extract it
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -52,9 +56,10 @@ def process_zip(uploaded_file):
                     zip_out.write(file_path, arcname=os.path.basename(file_path))
 
             with open(output_zip_path, "rb") as f:
-                return f.read(), None
-    except Exception as e:
-        return None, f"Unexpected error: {e}"
+    return f.read(), None
+except Exception as e:
+    return None, f"Unexpected error: {e!r}"
+
 
 # --- HANDLE UPLOAD ---
 if uploaded_file:
