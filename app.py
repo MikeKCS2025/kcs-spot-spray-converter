@@ -2,28 +2,24 @@ import streamlit as st
 import zipfile
 import tempfile
 import os
+import shapefile  # pyshp
 import shutil
 
-# --- PAGE SETUP ---
 st.set_page_config(page_title="Solvi to DJI Converter", layout="centered")
 st.title("Solvi to DJI Converter")
 st.caption("Upload your Solvi `.zip` or `.json` file and download DJI-compatible shapefiles.")
 
-# --- FILE UPLOADER ---
 uploaded_file = st.file_uploader(
     "Drag and drop file here",
     type=["zip", "json"],
     help="Limit 200MB per file • ZIP, JSON"
 )
 
-# --- SPRAY RATE INPUT ---
 spray_rate = st.number_input(
     "Enter Spray Rate (Gallons per Acre)",
-    min_value=0.1,
-    max_value=10.0,
+    min_value=0.01,
     value=1.0,
-    step=0.1,
-    format="%.2f"
+    step=0.1
 )
 
 def process_zip(uploaded_file, spray_rate):
@@ -33,37 +29,58 @@ def process_zip(uploaded_file, spray_rate):
             with open(zip_path, "wb") as f:
                 f.write(uploaded_file.getvalue())
 
-            # Extract contents
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Find shapefile base name
-            base_names = set()
+            # Identify shapefile base name
+            base_name = None
             for file in os.listdir(temp_dir):
                 if file.endswith(".shp"):
-                    base_names.add(os.path.splitext(file)[0])
+                    base_name = os.path.splitext(file)[0]
+                    break
 
-            if not base_names:
-                return None, "No .shp file found in the uploaded ZIP."
+            if not base_name:
+                return None, "No .shp file found in the ZIP."
 
-            base_name = list(base_names)[0]
             required_exts = [".shp", ".shx", ".dbf", ".prj"]
             missing = [ext for ext in required_exts if not os.path.exists(os.path.join(temp_dir, base_name + ext))]
             if missing:
                 return None, f"Missing required files: {', '.join(missing)}"
 
-            # Write metadata with spray rate
-            metadata_path = os.path.join(temp_dir, "metadata.txt")
-            with open(metadata_path, "w") as meta_file:
-                meta_file.write(f"Spray Rate (GPA): {spray_rate:.2f}")
+            # Modify attribute table
+            shp_path = os.path.join(temp_dir, base_name + ".shp")
+            r = shapefile.Reader(shp_path)
+            fields = r.fields[1:]  # Skip deletion flag
+            field_names = [field[0] for field in fields]
+            records = r.records()
+            shapes = r.shapes()
 
-            # Create output zip
+            updated_path = os.path.join(temp_dir, "updated.shp")
+            w = shapefile.Writer(updated_path)
+            for field in fields:
+                w.field(*field)
+            if "Rate" not in field_names:
+                w.field("Rate", "N", decimal=2)
+
+            for rec, shape in zip(records, shapes):
+                rec = list(rec)
+                if "Rate" not in field_names:
+                    rec.append(round(spray_rate, 2))
+                w.record(*rec)
+                w.shape(shape)
+
+            w.close()
+
+            # Copy original .prj and .shx and .dbf
+            for ext in [".prj", ".shx", ".dbf"]:
+                shutil.copy(os.path.join(temp_dir, base_name + ext), os.path.join(temp_dir, "updated" + ext))
+
+            # Create output ZIP
             output_zip_path = os.path.join(temp_dir, "DJI_ready.zip")
             with zipfile.ZipFile(output_zip_path, 'w') as zip_out:
-                for ext in required_exts:
-                    file_path = os.path.join(temp_dir, base_name + ext)
-                    zip_out.write(file_path, arcname=os.path.basename(file_path))
-                zip_out.write(metadata_path, arcname="metadata.txt")
+                for ext in [".shp", ".shx", ".dbf", ".prj"]:
+                    file_path = os.path.join(temp_dir, "updated" + ext)
+                    zip_out.write(file_path, arcname="updated" + ext)
 
             with open(output_zip_path, "rb") as f:
                 return f.read(), None
@@ -71,7 +88,6 @@ def process_zip(uploaded_file, spray_rate):
     except Exception as e:
         return None, f"Unexpected error: {e}"
 
-# --- HANDLE UPLOAD ---
 if uploaded_file and uploaded_file.name.endswith(".zip"):
     output_file, error = process_zip(uploaded_file, spray_rate)
 
@@ -85,5 +101,5 @@ if uploaded_file and uploaded_file.name.endswith(".zip"):
             file_name="DJI_ready.zip",
             mime="application/zip"
         )
-elif uploaded_file:
-    st.warning("Only .zip processing is supported at this time.")
+elif uploaded_file and uploaded_file.name.endswith(".json"):
+    st.warning("JSON file support coming soon. Please upload a `.zip` from Solvi.")
