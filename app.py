@@ -20,7 +20,7 @@ def extract_shapefiles_from_zip(zip_bytes):
     with tempfile.TemporaryDirectory() as temp_dir:
         zip_path = os.path.join(temp_dir, "input.zip")
         with open(zip_path, "wb") as f:
-            f.write(zip_bytes.getvalue())
+            f.write(zip_bytes.read())
 
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
@@ -41,7 +41,6 @@ def extract_shapefiles_from_zip(zip_bytes):
         if missing:
             return None
 
-        # Prepare output ZIP
         output_dir = os.path.join(temp_dir, "output")
         os.makedirs(output_dir, exist_ok=True)
         for ext in required_exts:
@@ -53,8 +52,8 @@ def extract_shapefiles_from_zip(zip_bytes):
                 file_path = os.path.join(output_dir, base_name + ext)
                 zip_out.write(file_path, arcname=os.path.basename(file_path))
 
-        with open(output_zip_path, "rb") as f:
-            return f.read()
+        with open(output_zip_path, "rb") as output_file:
+            return output_file.read()
 
 if uploaded_file:
     if uploaded_file.name.endswith(".zip"):
@@ -67,7 +66,3 @@ if uploaded_file:
                 file_name="dji_ready.zip",
                 mime="application/zip"
             )
-        else:
-            st.error("❌ No valid shapefiles found in the uploaded Solvi .zip.")
-    else:
-        st.warning("Only .zip Solvi exports are supported right now.")
