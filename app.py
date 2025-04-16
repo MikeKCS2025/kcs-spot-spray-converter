@@ -4,7 +4,6 @@ import tempfile
 import os
 import shutil
 import shapefile  # pyshp
-from shapefile import Writer, Reader
 
 st.set_page_config(page_title="Solvi to DJI Converter", layout="centered")
 
@@ -17,15 +16,13 @@ uploaded_file = st.file_uploader(
     help="Limit 200MB per file • ZIP, JSON"
 )
 
-gpa = st.number_input(
-    "Enter Spray Rate (Gallons per Acre)",
-    min_value=0.1,
-    max_value=10.0,
-    step=0.1,
-    value=1.0
-)
+spray_rate = st.number_input("Enter Spray Rate (Gallons per Acre)", min_value=0.1, value=1.0, step=0.1)
 
-def convert_zip(zip_bytes, gpa):
+def is_valid_shapefile_set(file_list, base_name):
+    required_exts = [".shp", ".shx", ".dbf", ".prj"]
+    return all(f"{base_name}{ext}" in file_list for ext in required_exts)
+
+def convert_zip_to_dji(zip_bytes, spray_rate):
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             zip_path = os.path.join(temp_dir, "input.zip")
@@ -35,94 +32,89 @@ def convert_zip(zip_bytes, gpa):
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            # Find base shapefile
-            base_names = set()
-            for file in os.listdir(temp_dir):
-                if file.endswith(".shp"):
-                    base = os.path.splitext(file)[0]
-                    base_names.add(base)
-
+            file_list = os.listdir(temp_dir)
+            base_names = set(os.path.splitext(f)[0] for f in file_list if f.endswith(".shp"))
             if not base_names:
                 return None, None, "No .shp file found in the ZIP."
 
             base_name = list(base_names)[0]
-            required_exts = [".shp", ".shx", ".dbf", ".prj"]
-            missing = [ext for ext in required_exts if not os.path.exists(os.path.join(temp_dir, base_name + ext))]
-            if missing:
-                return None, None, f"Missing required files: {', '.join(missing)}"
+            if not is_valid_shapefile_set(file_list, base_name):
+                return None, None, "Missing one or more required shapefile components."
 
-            # Copy original for safe export
-            standard_zip = os.path.join(temp_dir, "original_dji.zip")
-            with zipfile.ZipFile(standard_zip, 'w') as orig_zip:
-                for ext in required_exts:
-                    file_path = os.path.join(temp_dir, base_name + ext)
-                    orig_zip.write(file_path, arcname=os.path.basename(file_path))
+            # Read shapefile
+            shp_reader = shapefile.Reader(os.path.join(temp_dir, f"{base_name}.shp"))
+            fields = shp_reader.fields[1:]  # skip deletion flag
+            field_names = [f[0] for f in fields]
 
-            # Read and update DBF
-            reader = Reader(os.path.join(temp_dir, base_name + ".shp"))
-            fields = reader.fields[1:]  # skip DeletionFlag
-            field_names = [field[0] for field in fields]
-            records = reader.records()
-            shapes = reader.shapes()
-
-            new_dbf = os.path.join(temp_dir, "updated.dbf")
-            writer = Writer(os.path.join(temp_dir, base_name))
+            # Add spray rate to DBF
+            temp_output_base = os.path.join(temp_dir, "updated")
+            shp_writer = shapefile.Writer(temp_output_base)
             for field in fields:
-                writer.field(*field)
+                shp_writer.field(*field)
+            if "GPA" not in field_names:
+                shp_writer.field("GPA", "N", decimal=2)
 
-            if "Rate" not in field_names:
-                writer.field("Rate", "N", 10, 2)
+            for rec, shape in zip(shp_reader.records(), shp_reader.shapes()):
+                rec_dict = dict(zip(field_names, rec))
+                rec_dict["GPA"] = spray_rate
+                rec_values = [rec_dict.get(f, "") for f in field_names]
+                rec_values.append(spray_rate)
+                shp_writer.shape(shape)
+                shp_writer.record(*rec_values)
+            shp_writer.close()
 
-            for i, record in enumerate(records):
-                record = list(record)
-                if "Rate" not in field_names:
-                    record.append(round(gpa, 2))
-                else:
-                    rate_idx = field_names.index("Rate")
-                    record[rate_idx] = round(gpa, 2)
-                writer.record(*record)
-                writer.shape(shapes[i])
+            # Copy .prj file
+            original_prj = os.path.join(temp_dir, f"{base_name}.prj")
+            updated_prj = os.path.join(temp_dir, "updated.prj")
+            if os.path.exists(original_prj):
+                shutil.copy(original_prj, updated_prj)
 
-            writer.close()
+            # Create two output zips
+            out1 = os.path.join(temp_dir, "DJI_original.zip")
+            out2 = os.path.join(temp_dir, "DJI_updated.zip")
 
-            # Updated zip
-            updated_zip = os.path.join(temp_dir, "updated_dji.zip")
-            with zipfile.ZipFile(updated_zip, 'w') as update_zip:
-                for ext in required_exts:
-                    path = os.path.join(temp_dir, base_name + ext)
-                    update_zip.write(path, arcname=os.path.basename(path))
+            with zipfile.ZipFile(out1, 'w') as zip_out:
+                for ext in [".shp", ".shx", ".dbf", ".prj"]:
+                    file_path = os.path.join(temp_dir, f"{base_name}{ext}")
+                    if os.path.exists(file_path):
+                        zip_out.write(file_path, arcname=f"{base_name}{ext}")
 
-            return standard_zip, updated_zip, None
+            with zipfile.ZipFile(out2, 'w') as zip_out:
+                for ext in [".shp", ".shx", ".dbf", ".prj"]:
+                    file_path = os.path.join(temp_dir, f"updated{ext}")
+                    if os.path.exists(file_path):
+                        zip_out.write(file_path, arcname=f"updated{ext}")
+
+            with open(out1, "rb") as f1, open(out2, "rb") as f2:
+                return f1.read(), f2.read(), None
 
     except Exception as e:
         return None, None, f"Unexpected error: {e}"
 
-# --- FRONTEND DISPLAY ---
+# --- UI Logic ---
 if uploaded_file:
     if uploaded_file.name.endswith(".zip"):
-        st.success("ZIP file uploaded. Processing...")
-
-        standard_zip, updated_zip, error = convert_zip(uploaded_file, gpa)
+        output_original, output_updated, error = convert_zip_to_dji(uploaded_file, spray_rate)
 
         if error:
             st.error(error)
         else:
+            st.success("ZIP file uploaded. Processing complete!")
+
             col1, col2 = st.columns(2)
             with col1:
-                with open(standard_zip, "rb") as f:
-                    st.download_button(
-                        label="Download Original ZIP",
-                        data=f.read(),
-                        file_name="Original_DJI.zip",
-                        mime="application/zip"
-                    )
+                st.download_button(
+                    label="Download Original DJI ZIP",
+                    data=output_original,
+                    file_name="DJI_original.zip",
+                    mime="application/zip"
+                )
             with col2:
-                with open(updated_zip, "rb") as f:
-                    st.download_button(
-                        label="Download Updated ZIP",
-                        data=f.read(),
-                        file_name="Updated_DJI.zip",
-                        mime="application/zip"
-                    )
-    else:
-        st.warning("JSON file support coming soon. Please upload a .zip from Solvi.")
+                st.download_button(
+                    label="Download Updated ZIP (with GPA)",
+                    data=output_updated,
+                    file_name="DJI_updated.zip",
+                    mime="application/zip"
+                )
+    elif uploaded_file.name.endswith(".json"):
+        st.warning("JSON support coming soon. Please upload a Solvi .zip for now.")
