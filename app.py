@@ -2,8 +2,10 @@ import streamlit as st
 import zipfile
 import tempfile
 import os
+import shapefile  # pyshp
 
 st.set_page_config(page_title="Solvi to DJI Converter", layout="centered")
+
 st.title("Solvi to DJI Converter")
 st.caption("Upload your Solvi `.zip` or `.json` file and download DJI-compatible shapefiles.")
 
@@ -21,55 +23,86 @@ spray_rate = st.number_input(
     step=0.1
 )
 
-def process_zip(uploaded_file, spray_rate):
+def process_zip(file, gpa):
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            zip_path = os.path.join(temp_dir, "input.zip")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, "upload.zip")
             with open(zip_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
+                f.write(file.getvalue())
 
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
+                zip_ref.extractall(tmpdir)
 
-            base_names = set()
-            for file in os.listdir(temp_dir):
-                if file.endswith(".shp"):
-                    base_names.add(os.path.splitext(file)[0])
+            shp_file = None
+            for fname in os.listdir(tmpdir):
+                if fname.endswith(".shp"):
+                    shp_file = os.path.join(tmpdir, fname)
+                    base_name = os.path.splitext(fname)[0]
+                    break
 
-            if not base_names:
-                return None, "No .shp file found in the ZIP."
+            if not shp_file:
+                return None, "No .shp file found in archive."
 
-            base_name = list(base_names)[0]
             required_exts = [".shp", ".shx", ".dbf", ".prj"]
-            missing = [ext for ext in required_exts if not os.path.exists(os.path.join(temp_dir, base_name + ext))]
-            if missing:
-                return None, f"Missing required files: {', '.join(missing)}"
+            for ext in required_exts:
+                full_path = os.path.join(tmpdir, base_name + ext)
+                if not os.path.exists(full_path):
+                    return None, f"Missing required file: {base_name + ext}"
 
-            # Create output ZIP
-            output_zip_path = os.path.join(temp_dir, "DJI_ready.zip")
-            with zipfile.ZipFile(output_zip_path, 'w') as zip_out:
+            # Read original shapefile and write updated one
+            r = shapefile.Reader(shp_file)
+            fields = r.fields[1:]  # skip deletion flag
+            field_names = [field[0] for field in fields]
+            records = r.records()
+            shapes = r.shapes()
+
+            output_base = os.path.join(tmpdir, "updated")
+            w = shapefile.Writer(output_base)
+            w.fields = r.fields[1:]
+
+            for rec in records:
+                w.record(*rec)
+            for shape in shapes:
+                w.shape(shape)
+
+            w.close()
+
+            # Copy PRJ
+            prj_src = os.path.join(tmpdir, base_name + ".prj")
+            prj_dst = output_base + ".prj"
+            if os.path.exists(prj_src):
+                with open(prj_src, "r") as src, open(prj_dst, "w") as dst:
+                    dst.write(src.read())
+            else:
+                return None, f"Projection file (.prj) not found: {prj_src}"
+
+            # Zip output
+            output_zip = os.path.join(tmpdir, "DJI_ready.zip")
+            with zipfile.ZipFile(output_zip, "w") as zip_out:
                 for ext in required_exts:
-                    file_path = os.path.join(temp_dir, base_name + ext)
-                    zip_out.write(file_path, arcname=os.path.basename(file_path))
+                    fpath = output_base + ext
+                    if os.path.exists(fpath):
+                        zip_out.write(fpath, arcname=os.path.basename(fpath))
 
-            with open(output_zip_path, "rb") as f:
-                return f.read(), None
+            with open(output_zip, "rb") as final:
+                return final.read(), None
+
     except Exception as e:
         return None, f"Unexpected error: {e}"
 
-# --- HANDLE UPLOAD ---
-if uploaded_file and uploaded_file.name.endswith(".zip"):
-    output_file, error = process_zip(uploaded_file, spray_rate)
-
-    if error:
-        st.error(error)
-    else:
-        st.success("ZIP file uploaded. Processing complete!")
-        st.download_button(
-            label="Download DJI Shapefile ZIP",
-            data=output_file,
-            file_name="DJI_ready.zip",
-            mime="application/zip"
-        )
-elif uploaded_file and uploaded_file.name.endswith(".json"):
-    st.warning("JSON file support coming soon. Please upload a .zip from Solvi.")
+if uploaded_file:
+    if uploaded_file.name.endswith(".zip"):
+        with st.spinner("Processing ZIP file..."):
+            output_data, error = process_zip(uploaded_file, spray_rate)
+        if error:
+            st.error(error)
+        else:
+            st.success("ZIP file uploaded. Processing complete!")
+            st.download_button(
+                label="Download DJI Shapefile ZIP",
+                data=output_data,
+                file_name="DJI_ready.zip",
+                mime="application/zip"
+            )
+    elif uploaded_file.name.endswith(".json"):
+        st.warning("JSON support coming soon. Please upload a .zip from Solvi.")
